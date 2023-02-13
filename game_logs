@@ -1,0 +1,90 @@
+#load necessary libraries
+library(baseballr)
+library(dplyr)
+library(openxlsx)
+
+
+###PULL PITCHER GAME LOGS
+
+#get starting pitcher ids from fangraphs leaderboards
+pitcher_ids <- fg_pitcher_leaders(x = 2022, y = 2022, league = "all", qual = "n", pitcher_type = "sta", ind = 1)
+
+#filter out any pitchers with less than 30 innings
+pitcher_ids <- pitcher_ids[which(pitcher_ids$IP >= 30), 1]
+
+#pull first game log to set the data frame
+pitcher_games <- fg_pitcher_game_logs(pitcher_ids$playerid[1], year = 2022)
+
+#find start and end points of columns to remove
+end1 <- which(names(pitcher_games) == 'MD')
+start1 <- which(names(pitcher_games) == 'O-Swing%')
+end2 <- which(names(pitcher_games) == 'GSv2')
+start2 <- which(names(pitcher_games) == 'Events')
+columns <- length(names(pitcher_games))
+
+#filter down data frame
+pitcher_games <- pitcher_games[,c(1:end1,start1:end2,start2:columns)]
+
+
+#loop to pull the rest of the game logs
+for (i in 2:nrow(pitcher_ids)) {
+  
+  #pause 2 seconds between scrapes, friendly to fangraphs
+  Sys.sleep(2)
+  
+  #put current game log in placeholder
+  holder <- fg_pitcher_game_logs(pitcher_ids$playerid[i], year = 2022)
+  
+  #find start and end points of columns to remove
+  end1 <- which(names(holder) == 'MD')
+  start1 <- which(names(holder) == 'O-Swing%')
+  end2 <- which(names(holder) == 'GSv2')
+  start2 <- which(names(holder) == 'Events')
+  columns <- length(names(holder))
+  
+  #filter down data frame
+  holder <- holder[,c(1:end1,start1:end2,start2:columns)]
+  
+  #add new game log to full dataset
+  pitcher_games <- rbind(pitcher_games, holder)
+}
+
+
+#write game logs to excel file so do not have to scrape again
+setwd("---")
+write.xlsx(pitcher_games, 'pitcher_game_logs_2022.xlsx')
+
+
+
+###PULL BATTER GAME LOGS
+
+#get starting pitcher ids from fangraphs leaderboards
+batter_ids <- fg_batter_leaders(x = 2022, y = 2022, league = "all", qual = "n", ind = 1, exc_p = TRUE)
+
+#pull first game log to set the data frame
+batter_games <- fg_batter_game_logs(batter_ids$playerid[1], year = 2022)
+
+#filter down data frame
+batter_games <- batter_games[,c(1:39)]
+
+
+#loop to pull the rest of the game logs
+for (i in 2:nrow(batter_ids)) {
+  
+  #pause 2 seconds between scrapes, friendly to fangraphs
+  Sys.sleep(2)
+  
+  #put current game log in placeholder
+  holder <- fg_batter_game_logs(batter_ids$playerid[i], year = 2022)
+  
+  #filter down data frame
+  holder <- holder[,c(1:39)]
+  
+  #add new game log to full dataset
+  batter_games <- rbind(batter_games, holder)
+}
+
+
+#write game logs to excel file so do not have to scrape again
+setwd("---")
+write.xlsx(batter_games, 'batter_game_logs_2022.xlsx')
