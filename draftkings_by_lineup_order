@@ -1,0 +1,55 @@
+#load necessary libraries
+library(baseballr)
+library(dplyr)
+library(openxlsx)
+
+
+###load batter game logs, see game log code if do not have game logs saved locally
+setwd("---")
+batter_games <- read.xlsx("batter_game_logs_2022.xlsx")
+
+#change names of 1B,2B,3B so they work correctly
+names(batter_games)[c(14:16)] <- c("Singles","Doubles","Triples")
+
+#add DK points
+batter_games$DK <- batter_games$Singles*3 + batter_games$Doubles*5 + batter_games$Triples*8 + batter_games$HR*10 + batter_games$RBI*2 + batter_games$R*2 + batter_games$BB*2 + batter_games$IBB*2 + batter_games$HBP*2 + batter_games$SB*5
+
+#group DK points by team and date
+team_games <- batter_games %>%
+  group_by(Team, Date) %>%
+  summarise(R = sum(R), DK = sum(DK))
+
+#team_summaries
+team_summary <- team_games %>%
+  group_by(Team) %>%
+  summarise(avgDK = mean(DK), pct10DK = quantile(DK, probs = 0.1), pct25DK = quantile(DK, probs = 0.25), pct50DK = quantile(DK, probs = 0.5), pct75DK = quantile(DK, probs = 0.75), pct90DK = quantile(DK, probs = 0.9))
+
+
+###For 90th percentile games, what is the distribution of DK points by lineup position?
+#Is it as top heavy as we would assume or
+#is it a little flatter and give more credence to stacks with guys lower in the batting order?
+
+#create game ids in batter games and team games data frames
+batter_games$game_id <- paste(batter_games$Team, batter_games$Date)
+team_games$game_id <- paste(team_games$Team, team_games$Date)
+
+#get list of game ids for 90+ percentile DK points
+top_90_DK <- head(team_games[order(team_games$DK, decreasing = T), ], 0.1*nrow(team_games))
+top_game_ids <- top_90_DK$game_id
+
+#create summary data frame of player games with only the 90+ pctile of games
+top_90_batters <- batter_games[which(batter_games$game_id %in% top_game_ids), ] %>%
+  group_by(BatOrder) %>%
+  summarise(avgDK = mean(DK), medianDK = median(DK))
+top_90_batters <- top_90_batters[-which(top_90_batters$BatOrder == 0), ]
+top_90_batters$Pct <- top_90_batters$avgDK/sum(top_90_batters$avgDK)
+
+###*** CONCLUSION: Top Heavy
+###*Tier 1: 1 - 3
+###*Tier 2: 4
+###*Tier 3: 5 - 6
+###*Tier 4: 7 - 8
+###*Tier 5: 9
+###*1 - 6 Stack of a high conviction team is obviously the best
+###*However with salary constraints, can use the tiers to help find best stack
+
