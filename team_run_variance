@@ -1,0 +1,57 @@
+#load necessary libraries
+library(baseballr)
+library(dplyr)
+library(openxlsx)
+
+
+###TEAM BATTING VARIANCE
+#What has a higher variance: runs for or runs against?
+
+
+#load team abbreviations, start by loading standings to get correct abbreviations
+team_standings <- bref_standings_on_date("2022-10-01", division = "AL East")
+
+#start data frame for "ids", abbreviations
+team_ids <- team_standings$Tm
+
+#add other divisions in a very inefficient way
+team_standings <- bref_standings_on_date("2022-10-01", division = "AL Central")
+team_ids <- c(team_ids, team_standings$Tm)
+team_standings <- bref_standings_on_date("2022-10-01", division = "AL West")
+team_ids <- c(team_ids, team_standings$Tm)
+team_standings <- bref_standings_on_date("2022-10-01", division = "NL East")
+team_ids <- c(team_ids, team_standings$Tm)
+team_standings <- bref_standings_on_date("2022-10-01", division = "NL Central")
+team_ids <- c(team_ids, team_standings$Tm)
+team_standings <- bref_standings_on_date("2022-10-01", division = "NL West")
+team_ids <- c(team_ids, team_standings$Tm)
+
+
+#load batting leaderboard
+team_games <- bref_team_results(team_ids[1], "2022")
+
+#loop to fill in the rest
+for (i in 2:length(team_ids)) {
+  holder <- bref_team_results(team_ids[i], "2022")
+  team_games <- rbind(team_games,holder)
+}
+
+#create data frame of team standard deviations and IQRs
+runs_variance <- team_games %>%
+  group_by(Tm) %>%
+  summarise(sdRF = sd(R), iqrRF = IQR(R), sdRA = sd(RA), iqrRA = IQR(RA))
+
+#output summary stats
+mean(runs_variance$sdRF) #3.078209
+mean(runs_variance$sdRA) #3.048462
+
+median(runs_variance$sdRF) #3.041226
+median(runs_variance$sdRA) #3.017182
+
+mean(runs_variance$iqrRF) #3.833333
+mean(runs_variance$iqrRA) #3.958333
+
+median(runs_variance$iqrRF) #4
+median(runs_variance$iqrRA) #4
+
+###CONCLUSION: ABOUT THE SAME (ONLY ONE YEAR OF DATA THOUGH)
