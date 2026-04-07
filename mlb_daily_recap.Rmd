@@ -1,0 +1,886 @@
+---
+title: "**MLB Daily Recap**"
+output: pdf_document
+#date: "`r Sys.Date()-1`"
+---
+
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, eval = FALSE)
+```
+
+```{r, eval=TRUE, echo=FALSE, message=FALSE, results='hide'}
+library(dplyr)
+library(baseballr)
+library(mlbplotR)
+library(gt)
+library(gtsummary)
+library(gtExtras)
+library(glue)
+library(rmarkdown)
+library(ggplot2)
+library(ggtext)
+library(tidyverse)
+library(magick)
+library(cowplot)
+library(egg)
+
+
+#set directory and clear all previous png files
+setwd("C:/Users/jkved/OneDrive/Desktop/Sports Analytics/MLB/Daily Recap PNG Files")
+docs <- list.files(pattern = "*.png")
+file.remove(docs)
+
+```
+
+```{r, eval=TRUE, echo=FALSE, fig.align = 'center', results='hide'}
+#define date of recap
+recap_date <- Sys.Date()-2
+
+#pull game ids from yesterday
+yest_game_ids <- mlb_game_pks(recap_date, level_ids = c(1))
+#filter out any unfinished games
+yest_game_ids <- yest_game_ids[which(yest_game_ids$status.detailedState == "Final"), ]
+
+#load logos
+teams_colors_logos <- mlbplotR::load_mlb_teams() |> 
+  dplyr::filter(!team_abbr %in% c("AL", "NL", "MLB")) |> 
+  dplyr::mutate(
+    a = rep(1:6, 5),
+    b = sort(rep(1:5, 6), decreasing = TRUE)
+  )
+#make updates to logo dataset abbreviations
+teams_colors_logos$team_abbr[which(teams_colors_logos$team_abbr == 'AZ')] <- 'ARI'
+teams_colors_logos$team_abbr[which(teams_colors_logos$team_abbr == 'CWS')] <- 'CHW'
+teams_colors_logos$team_abbr[which(teams_colors_logos$team_abbr == 'KC')] <- 'KCR'
+teams_colors_logos$team_abbr[which(teams_colors_logos$team_abbr == 'OAK')] <- 'ATH'
+teams_colors_logos$team_abbr[which(teams_colors_logos$team_abbr == 'SD')] <- 'SDP'
+teams_colors_logos$team_abbr[which(teams_colors_logos$team_abbr == 'SF')] <- 'SFG'
+teams_colors_logos$team_abbr[which(teams_colors_logos$team_abbr == 'TB')] <- 'TBR'
+teams_colors_logos$team_abbr[which(teams_colors_logos$team_abbr == 'WSH')] <- 'WSN'
+#make updates to logo dataset team names
+teams_colors_logos$team_name[which(teams_colors_logos$team_name == 'Oakland Athletics')] <- 'Athletics'
+
+
+###GAME DATA 
+
+#define variables to keep for game_ids
+game_vars <- c('game_pk','officialDate','gameNumber','doubleHeader','dayNight','teams.away.score',
+               'teams.away.leagueRecord.wins','teams.away.leagueRecord.losses','teams.away.team.id',
+               'teams.away.team.name','teams.home.score','teams.home.leagueRecord.wins',
+               'teams.home.leagueRecord.losses','teams.home.team.id','teams.home.team.name')
+yest_game_ids <- yest_game_ids[,game_vars]
+
+#add abbreviations to game data
+yest_game_ids <- yest_game_ids %>%
+  left_join(teams_colors_logos[,c(1,4)], by = c("teams.away.team.name" = "team_name")) %>%
+  left_join(teams_colors_logos[,c(1,4)], by = c("teams.home.team.name" = "team_name"))
+#fix column names
+names(yest_game_ids)[which(names(yest_game_ids) == "team_abbr.x")] <- 'away_abbr'
+names(yest_game_ids)[which(names(yest_game_ids) == "team_abbr.y")] <- 'home_abbr'
+
+#remove doubleheaders for now until i can find a solution
+yest_game_ids <- yest_game_ids[which(yest_game_ids$doubleHeader != "S"),]
+
+
+###PITCHER DATA
+
+#load pitcher data
+yest_pitchers <- fg_pitcher_leaders(startseason = format(Sys.Date(),"%Y"),endseason = format(Sys.Date(),"%Y"),
+                                    startdate = recap_date,enddate = recap_date,month = "1000",sortstat = "WAR")
+#define pitcher variables to keep for leaderboards
+pitcher_vars <- c("PlayerName","playerid","xMLBAMID","team_name","GS","Pitches","IP","TBF","W","L","SV"
+                  ,"SO","BB","IBB","HBP","H","R","ER","HR","SwStr_pct","CStr_pct","pi_vFA","QS","SD","MD"
+                  ,"WPA","pLI","WAR")
+#keep only columns called out
+yest_pitchers <- yest_pitchers[,pitcher_vars]
+#calculate Whiffs
+yest_pitchers$Whiffs <- round(yest_pitchers$Pitches * yest_pitchers$SwStr_pct,0)
+#calculate Outs recorded
+yest_pitchers$Outs <- (yest_pitchers$IP - round(yest_pitchers$IP, digits = 0))*10+round(yest_pitchers$IP, digits = 0)*3
+#calculate game score v2
+yest_pitchers$gsv2 <- (40 + 2*yest_pitchers$Outs + 1*yest_pitchers$SO - 2*yest_pitchers$BB 
+                       - 2*yest_pitchers$IBB - 2*yest_pitchers$HBP - 2*yest_pitchers$H
+                       - 3*yest_pitchers$R - 6*yest_pitchers$HR)
+#add team logos to the data frame
+yest_pitchers <- yest_pitchers %>%
+  left_join(teams_colors_logos[,c(4,6)], by = c("team_name" = "team_abbr"))
+#add opponents
+yest_pitchers <- yest_pitchers %>%
+  left_join(yest_game_ids[,c(16,17)], by = c("team_name" = "away_abbr")) %>%
+  left_join(yest_game_ids[,c(16,17)], by = c("team_name" = "home_abbr"))
+yest_pitchers$opponent <- NA
+for (i in 1:nrow(yest_pitchers)) {
+  if (is.na(yest_pitchers$home_abbr[i])) {
+    yest_pitchers$opponent[i] <- paste("v", yest_pitchers$away_abbr[i], sep = " ")
+  } else {
+    yest_pitchers$opponent[i] <- paste("@", yest_pitchers$home_abbr[i], sep = " ")
+  }
+}
+
+##add starter game scores to game data
+yest_game_ids <- yest_game_ids %>%
+  left_join(yest_pitchers[which(yest_pitchers$GS == 1), c(4,31)], by = c("away_abbr" = "team_name")) %>%
+  left_join(yest_pitchers[which(yest_pitchers$GS == 1), c(4,31)], by = c("home_abbr" = "team_name"))
+#fix column names
+names(yest_game_ids)[which(names(yest_game_ids) == "gsv2.x")] <- 'away_gsv2'
+names(yest_game_ids)[which(names(yest_game_ids) == "gsv2.y")] <- 'home_gsv2'
+
+
+
+##BATTER DATA
+
+#load batter data
+yest_batters <- fg_batter_leaders(qual = "1",startseason = format(Sys.Date(),"%Y"),endseason = format(Sys.Date(),"%Y"),
+                                  startdate = recap_date,enddate = recap_date,month = "1000",sortstat = "WAR")
+#define batter variables to keep for leaderboards
+yest_batters$TB <- yest_batters$`1B`+yest_batters$`2B`*2+yest_batters$`3B`*3+yest_batters$HR*4
+#define batter variables to keep for leaderboards
+batter_vars <- c("PlayerName","playerid","xMLBAMID","team_name","PA","H","HR","R","RBI","SB","CS","SO","BB","TB","Barrels","maxEV","WPA","pLI","WAR")
+#keep only columns called out
+yest_batters <- yest_batters[,batter_vars]
+#add team logos to the data frame
+yest_batters <- yest_batters %>%
+  left_join(teams_colors_logos[,c(4,6)], by = c("team_name" = "team_abbr"))
+#add opponents
+yest_batters <- yest_batters %>%
+  left_join(yest_game_ids[,c(16,17)], by = c("team_name" = "away_abbr")) %>%
+  left_join(yest_game_ids[,c(16,17)], by = c("team_name" = "home_abbr"))
+yest_batters$opponent <- NA
+for (i in 1:nrow(yest_batters)) {
+  if (is.na(yest_batters$home_abbr[i])) {
+    yest_batters$opponent[i] <- paste("v", yest_batters$away_abbr[i], sep = " ")
+  } else {
+    yest_batters$opponent[i] <- paste("@", yest_batters$home_abbr[i], sep = " ")
+  }
+}
+
+
+
+##### 1. Scoreboard
+
+#function that will place team records underneath their logo using HTML
+gt_mlb_stack <- function(data, logo, upper_text, lower_text1, lower_text2) {
+  data %>%
+    mutate(stack = glue(
+      "<div style='display: flex; align-items: center;'>
+           <img src='{eval(expr({{logo}}))}' style='height: auto; width: 30px; padding-right: 5px;'>
+           <div>
+             <div style='line-height:18px;'><span style='font-weight:bold;color:black;font-size:18px'>{eval(expr({{upper_text}}))}</span></div>
+            <div style='line-height:10px;'><span style='font-weight:plain;color:grey;font-size:10px'>{eval(expr({{lower_text1}}))}-{eval(expr({{lower_text2}}))}</span></div>
+         </div>"
+    )    )
+}
+
+#function that will concisely display basic game stats
+gt_mlb_stat_stack <- function(data, upper_text1, upper_text2, upper_text3, lower_text1, lower_text2, lower_text3) {
+  data %>%
+    mutate(stack = glue(
+      "<div style='display: flex; align-items: center;'>
+           </div>
+             <div style='line-height:14px;'><span style='font-weight:plain;color:black;font-size:14px'>A:  {eval(expr({{upper_text1}}))} - {eval(expr({{upper_text2}}))} - {eval(expr({{upper_text3}}))}</span></div>
+             <div style='line-height:14px;'><span style='font-weight:plain;color:black;font-size:14px'>H:  {eval(expr({{lower_text1}}))} - {eval(expr({{lower_text2}}))} - {eval(expr({{lower_text3}}))}</span></div>
+           </div>
+         </div>"
+    )    )
+}
+
+#plot game scoreboard summary
+plot_game_scoreboard <- function(game) {
+  
+  date <- recap_date
+  
+  #get game data
+  game_data <- yest_game_ids
+  
+  #mlb game linescore data
+  game_linescore <- mlb_game_linescore(game[1])
+  #loop for all games
+  for (i in 2:length(game)) {
+    temp_game_linescore <- mlb_game_linescore(game[i])
+    game_linescore <- rbind(game_linescore, temp_game_linescore)
+    Sys.sleep(3)
+  }
+  #summarize data in full game stats
+  game_linescore <- game_linescore %>%
+    group_by(game_pk) %>%
+    summarise(home_hits = sum(home_hits, na.rm = TRUE), away_hits = sum(away_hits, na.rm = TRUE), 
+              home_errors = sum(home_errors, na.rm = TRUE), away_errors = sum(away_errors, na.rm = TRUE),
+              home_LOB = sum(home_left_on_base, na.rm = TRUE), away_LOB = sum(away_left_on_base, na.rm = TRUE))
+  #join with base game data
+  game_data <- game_data %>% 
+    left_join(game_linescore, by = "game_pk")
+  
+  #mlb game info
+  #game_info <- mlb_game_info(game[1])
+  #loop for all games
+  #for (i in 2:length(game)) {
+    #temp_game_info <- mlb_game_info(game[i])
+    #game_info <- rbind(game_info, temp_game_info)
+    #Sys.sleep(3)
+  #}
+  #define variables to keep
+  #info_vars <- c("game_pk","venue_name","temperature","other_weather","wind","attendance"
+                 #,"start_time","elapsed_time")
+  #join with base game data
+  #game_data <- game_data %>% 
+    #left_join(game_info[,info_vars], by = "game_pk")
+  
+  #find winner of game for wp calc
+  for (i in 1:nrow(game_data)) {
+    if (game_data$teams.away.score[i] > game_data$teams.home.score[i]) {
+      game_data$winner[i] <- 'A'
+    } else {
+      game_data$winner[i] <- 'H'
+    }
+  }
+  #mlb win probability
+  game_wp <- mlb_game_wp(game[1])
+  game_wp$game_pk <- game_data$game_pk[1]
+  game_wp$winner <- game_data$winner[1]
+  #loop for all games
+  for (i in 2:length(game)) {
+    temp_game_wp <- mlb_game_wp(game[i])
+    temp_game_wp$game_pk <- game_data$game_pk[i]
+    temp_game_wp$winner <- game_data$winner[i]
+    game_wp <- rbind(game_wp, temp_game_wp)
+    Sys.sleep(3)
+  }
+  #calculate excitement, tension, and comeback metrics
+  homeW_game_wp <- game_wp %>%
+    filter(winner == "H") %>%
+    group_by(game_pk) %>%
+    summarise(Excitement = sum(abs(home_team_win_probability_added), na.rm = TRUE), 
+              Tension = sum(leverage_index, na.rm = TRUE),
+              Comeback = min(home_team_win_probability, na.rm = TRUE))
+  awayW_game_wp <- game_wp %>%
+    filter(winner == "A") %>%
+    group_by(game_pk) %>%
+    summarise(Excitement = sum(abs(home_team_win_probability_added), na.rm = TRUE), 
+              Tension = sum(leverage_index, na.rm = TRUE),
+              Comeback = min(away_team_win_probability, na.rm = TRUE))
+  game_wp <- rbind(homeW_game_wp, awayW_game_wp)
+  #re-scale metrics to 0-100
+  for (i in 1:nrow(game_wp)) {
+    #Excitement
+    if (game_wp$Excitement[i] > 550) {
+      game_wp$Excitement[i] <- 100
+    } else {
+      game_wp$Excitement[i] <- round(100*((game_wp$Excitement[i]-55)/(550-55)),1)
+    }
+    #Tension
+    if (game_wp$Tension[i] > 160) {
+      game_wp$Tension[i] <- 100
+    } else {
+      game_wp$Tension[i] <- round(100*((game_wp$Tension[i]-9)/(160-9)),1)
+    }
+    #Comeback
+    if (game_wp$Comeback[i] > 60) {
+      game_wp$Comeback[i] <- 0
+    } else {
+      game_wp$Comeback[i] <- round(100-(100*((game_wp$Comeback[i])/(60))),1)
+    }
+  }
+  #join with base game data
+  game_data <- game_data %>% 
+    left_join(game_wp, by = "game_pk")
+  
+  #add team logos
+  logo_vars <- c('team_name','team_logo_espn')
+  game_data <- game_data %>%
+    left_join(teams_colors_logos[,logo_vars], by = c("teams.away.team.name" = "team_name")) %>%
+    left_join(teams_colors_logos[,logo_vars], by = c("teams.home.team.name" = "team_name"))
+  #fix column names
+  names(game_data)[which(names(game_data) == "team_logo_espn.x")] <- 'away_logo'
+  names(game_data)[which(names(game_data) == "team_logo_espn.y")] <- 'home_logo'
+  
+  #add stacks
+  game_data <- game_data %>%
+    gt_mlb_stack(away_logo, teams.away.score, teams.away.leagueRecord.wins, teams.away.leagueRecord.losses)
+  names(game_data)[which(names(game_data) == "stack")] <- 'away_stack'
+  game_data <- game_data %>%
+    gt_mlb_stack(home_logo, teams.home.score, teams.home.leagueRecord.wins, teams.home.leagueRecord.losses)
+  names(game_data)[which(names(game_data) == "stack")] <- 'home_stack'
+  game_data <- game_data %>%
+    gt_mlb_stat_stack(away_hits, away_LOB, away_errors, home_hits, home_LOB, home_errors)
+  names(game_data)[which(names(game_data) == "stack")] <- 'stat_stack'
+  
+  
+  ###SCOREBOARD TABLE
+  font <- 'PT Sans'
+  
+  #set titles
+  title_text <- glue('MLB Scoreboard, {date}')
+  #subtitle_text1 <- glue('{game_data$start_time}, {game_data$venue_name} (Attendance: {game_data$attendance})')
+  title_header <- glue(
+    "<div style='display: flex; justify-content: space-between; align-items: center;'>
+       <div style='flex-grow: 1;'>
+         <span style='font-weight: bold; font-size: 24px; line-height: 0.5;'>{title_text}</span><br>
+       </div>
+     </div>"
+  )
+  
+  game_scoreboard_table <- game_data %>%
+    #mutate(Hits = glue('{away_hits} - {home_hits}')) %>%
+    #mutate(LOB = glue('{away_LOB} - {home_LOB}')) %>%
+    #mutate(Errors = glue('{away_errors} - {home_errors}')) %>%
+    select(away_stack,home_stack,stat_stack,away_gsv2,home_gsv2,Excitement,Tension,Comeback,winner) %>%
+    gt(id = 'table') %>% 
+    gt_theme_nytimes() %>% 
+    cols_align(columns = everything(), 'center') %>% 
+    cols_width(stat_stack ~ px(105), everything() ~ px(75)) %>%
+    fmt_number(columns = c(Excitement,Tension,Comeback), decimals = 1) %>% 
+    fmt_markdown(columns = c(away_stack,home_stack,stat_stack)) %>%
+    gt_color_rows(c(away_gsv2,home_gsv2), palette = "RdYlGn", direction = 1, domain = c(-20,50,110), pal_type = "continuous") %>%
+    gt_color_rows(c(Excitement,Tension,Comeback), palette = "RdYlGn", direction = 1, domain = c(0,50,100), pal_type = "continuous", alpha = 0.15) %>%
+    tab_style(locations = cells_body(columns = c(away_stack,home_stack,stat_stack,away_gsv2,home_gsv2,Excitement,Tension,Comeback)), style = cell_borders()) %>% 
+    tab_style(locations = cells_body(rows = 1), style = cell_borders(sides = "top", weight = px(2))) %>%
+    #tab_style(locations = cells_body(columns = case_when(home_stack)), style = cell_fill(color = "#ebca66", alpha = 0.15)), 
+              #winner == 'A' ~ tab_style(locations = cells_body(columns = away_stack), style = cell_fill(color = "#ebca66", alpha = 0.15))) %>%
+    tab_options(data_row.padding = 3.5,
+                source_notes.border.bottom.style = "solid",
+                source_notes.border.bottom.color = "white",
+                source_notes.font.size = 10) %>% 
+    tab_header(title = html(title_header)) %>% 
+    cols_hide(winner) %>%
+    cols_label(away_stack = 'Away', home_stack = 'Home', stat_stack = 'Hits-LOB-Errors',
+               away_gsv2 = "Away SP GS", home_gsv2 = "Home SP GS") %>% 
+    tab_source_note(md("GS = Game Score (40+2xOuts+1xSO-2xBB-2xH-3xR-6xHR)<br>Excitement: Measures the total 'movement' in Win Probability (Scaled to be out of 100)<br>Tension: Measure of the total Leverage Index throughout the game (Scaled to be out of 100)<br>Comeback: Based off the lowest win probability during the game for the winning team (Scaled to be out of 100)")) %>%
+    opt_css(
+      "
+        #table .gt_heading {
+          padding-top: 6px;
+          padding-bottom: 0px;
+        }
+        #table .gt_subtitle {
+          padding-top: 2px;
+          padding-bottom: 6px;
+        }
+        #table tbody tr:last-child {
+        border-bottom: 2px solid #000000;
+        }
+        "
+    )
+  return(game_scoreboard_table)
+}
+#test game scoreboard function
+#plot_game_scoreboard(yest_game_ids$game_pk)
+
+
+
+##### 2. Player Leaderboards
+
+#top batter performances plot function
+plot_SPs <- function(pitcher_data) {
+  
+  date <- recap_date
+  
+  font <- 'PT Sans'
+  #to_scale_number <- c(1:nrow(team_stats))
+  #to_scale_number <- which(team_data$stat %in% c('avg_poss_length_off','avg_poss_length_def','adj_o','adj_d'))
+  #to_scale_percent <- setdiff(1:nrow(team_data), to_scale_number)
+  
+  title_text = glue('Starting Pitcher Performances, {date}')
+  subtitle_text1 <- glue('Sorted by Game Score, formula under table')
+  
+  title_header <- glue(
+    "<div style='display: flex; justify-content: space-between; align-items: center;'>
+       <div style='flex-grow: 1;'>
+         <span style='font-weight: bold; font-size: 24px; line-height: 0.5;'>{title_text}</span><br>
+         <span style='font-weight: normal; font-size: 16px; line-height: 0.5;'>{subtitle_text1}</span><br>
+       </div>
+     </div>"
+  )
+  
+  top_pitcher_table <- pitcher_data %>% 
+    filter(GS == 1) %>%
+    arrange(-gsv2) %>%
+    select(team_logo_espn,PlayerName,opponent,Pitches,IP,W,L,H,R,HR,BB,SO,Whiffs,WPA,pLI,WAR,gsv2) %>% 
+    gt(id = 'table') %>% 
+    gt_theme_nytimes() %>% 
+    cols_move_to_start(team_logo_espn) %>% 
+    cols_align(columns = c(everything(), -PlayerName), 'center') %>% 
+    cols_align(columns = c(PlayerName), 'left') %>% 
+    cols_width(PlayerName ~ px(135), opponent ~ px(70), c(WPA,pLI,WAR) ~ px(60)
+               , c(team_logo_espn,IP,Pitches,Whiffs,gsv2) ~ px(50), everything() ~ px(35)) %>%
+    fmt_number(columns = c(WPA,pLI,WAR), decimals = 3) %>% 
+    fmt_image(team_logo_espn) %>%
+    gt_color_rows(gsv2, palette = "RdYlGn", direction = 1, domain = c(-20,50,110), pal_type = "continuous") %>%
+    gt_color_rows(c(WPA,WAR), palette = "RdYlGn", direction = 1, domain = c(-0.6,0.6), pal_type = "continuous") %>%
+    tab_style(locations = cells_body(columns = c(team_logo_espn,PlayerName,opponent,Pitches,IP,W,L,H,R,HR,BB,SO,Whiffs,WPA,pLI,WAR,gsv2)), style = cell_borders()) %>% 
+    tab_style(locations = cells_body(rows = 1), style = cell_borders(sides = "top", weight = px(2))) %>% 
+    tab_options(data_row.padding = 3.5,
+                source_notes.border.bottom.style = "solid",
+                source_notes.border.bottom.color = "white",
+                source_notes.font.size = 10) %>% 
+    tab_header(title = html(title_header)) %>% 
+    cols_label(team_logo_espn = '', PlayerName = 'Player') %>% 
+    tab_source_note(md("WPA: Win Probability Added, pLI: Average Leverage Index, gsv2: Game Score (40+2xOuts+1xSO-2xBB-2xH-3xR-6xHR)<br>Leverage Index measures the importance of a particular event by quantifying the extent to which win probability could change on said event<br>")) %>%
+    opt_css(
+      "
+        #table .gt_heading {
+          padding-top: 6px;
+          padding-bottom: 0px;
+        }
+        #table .gt_subtitle {
+          padding-top: 2px;
+          padding-bottom: 6px;
+        }
+        #table tbody tr:last-child {
+        border-bottom: 2px solid #000000;
+        }
+        "
+    )
+  return(top_pitcher_table)
+}
+#test starting pitcher recap function
+#plot_SPs(yest_pitchers)
+
+
+
+#top batter performances plot function
+plot_top_batters <- function(batter_data) {
+
+  date <- recap_date
+  
+  font <- 'PT Sans'
+  #to_scale_number <- c(1:nrow(team_stats))
+  #to_scale_number <- which(team_data$stat %in% c('avg_poss_length_off','avg_poss_length_def','adj_o','adj_d'))
+  #to_scale_percent <- setdiff(1:nrow(team_data), to_scale_number)
+  
+  title_text <- glue('Top Batter Performances, {date}')
+  subtitle_text1 <- glue('"Top" based on WAR added in game')
+  
+  title_header <- glue(
+    "<div style='display: flex; justify-content: space-between; align-items: center;'>
+       <div style='flex-grow: 1;'>
+         <span style='font-weight: bold; font-size: 24px; line-height: 0.5;'>{title_text}</span><br>
+         <span style='font-weight: normal; font-size: 16px; line-height: 0.5;'>{subtitle_text1}</span><br>
+       </div>
+     </div>"
+  )
+  
+  #color formatting
+  palette <- 'ggsci::green_material'
+  direction <- 1
+  
+  top_batter_table <- batter_data %>% 
+    top_n(30, WAR) %>%
+    gt(id = 'table') %>% 
+    gt_theme_nytimes() %>% 
+    cols_hide(c(team_name, playerid, xMLBAMID, home_abbr, away_abbr, Barrels)) %>% 
+    cols_move_to_start(c(team_logo_espn, PlayerName, opponent)) %>% 
+    cols_align(columns = c(everything(), -PlayerName), 'center') %>% 
+    cols_align(columns = c(PlayerName), 'left') %>% 
+    cols_width(team_logo_espn ~ px(50), PlayerName ~ px(150), opponent ~ px(70),
+               c(maxEV,WPA,pLI,WAR) ~ px(60), everything() ~ px(35)) %>%
+    fmt_number(columns = maxEV, decimals = 1) %>% 
+    fmt_number(columns = c(WPA,pLI,WAR), decimals = 3) %>% 
+    fmt_image(team_logo_espn) %>%
+    gt_color_rows(WAR, palette = palette, direction = direction, pal_type = "continuous") %>%
+    gt_color_rows(WPA, palette = palette, direction = direction, pal_type = "continuous") %>%
+    tab_style(locations = cells_body(columns = c(team_logo_espn,PlayerName,opponent,PA,H,HR,R,RBI,SB,CS,SO,BB,TB,maxEV,WPA,pLI,WAR)), style = cell_borders()) %>% 
+    tab_style(locations = cells_body(rows = 1), style = cell_borders(sides = "top", weight = px(2))) %>% 
+    tab_options(data_row.padding = 3.5,
+                source_notes.border.bottom.style = "solid",
+                source_notes.border.bottom.color = "white",
+                source_notes.font.size = 10) %>% 
+    tab_header(title = html(title_header)) %>% 
+    cols_label(team_logo_espn = '', PlayerName = 'Player') %>% 
+    tab_source_note(md("WPA: Win Probability Added, pLI: Average Leverage Index, TB: Total Bases<br>Leverage Index measures the importance of a particular event by quantifying the extent to which win probability could change on said event<br>Barrels: Batted-ball events whose comparable hit types (in terms of exit velocity & launch angle) have led to a minimum .500 batting avg and 1.500 slugging pct")) %>%
+    opt_css(
+      "
+        #table .gt_heading {
+          padding-top: 6px;
+          padding-bottom: 0px;
+        }
+        #table .gt_subtitle {
+          padding-top: 2px;
+          padding-bottom: 6px;
+        }
+        #table tbody tr:last-child {
+        border-bottom: 2px solid #000000;
+        }
+        "
+    )
+  return(top_batter_table)
+}
+#test top batter recap function
+#plot_top_batters(yest_batters)
+
+
+
+##### 3. Game Summaries
+
+#plot game win probability
+plot_game_wp <- function(game) {
+  
+  #get game data
+  game_data <- yest_game_ids[which(yest_game_ids$game_pk == game), ]
+  
+  #mlb game info
+  game_info <- mlb_game_info(game)
+  #define variables to keep
+  info_vars <- c("game_pk","venue_name","temperature","other_weather","wind","attendance"
+                 ,"start_time","elapsed_time")
+  #join with base game data
+  game_data <- game_data %>% 
+    left_join(game_info[,info_vars], by = "game_pk")
+  
+  #add team colors for plot
+  game_data <- game_data %>%
+    left_join(teams_colors_logos[,c(1,11)], by = c("teams.home.team.name" = "team_name")) %>%
+    left_join(teams_colors_logos[,c(1,11)], by = c("teams.away.team.name" = "team_name"))
+  #fix column names
+  names(game_data)[which(names(game_data) == "team_color.x")] <- 'home_color'
+  names(game_data)[which(names(game_data) == "team_color.y")] <- 'away_color'
+  
+  #mlb win probability
+  game_wp <- mlb_game_wp(game)
+  
+  #mlb pbp
+  game_pbp <- mlb_pbp(game)
+  
+  #change data type of atBatIndex
+  game_pbp$atBatIndex <- as.integer(game_pbp$atBatIndex)
+  
+  #keep only last pitch of an AB
+  game_pbp$last_pitch_AB <- NA
+  for (i in 1:nrow(game_pbp)) {
+    if (game_pbp$index[i] == max(game_pbp$index[which(game_pbp$atBatIndex == game_pbp$atBatIndex[i])])) {
+      game_pbp$last_pitch_AB[i] <- 'Y'
+    } else {
+      game_pbp$last_pitch_AB[i] <- 'N'
+    }
+  }
+  game_pbp <- game_pbp[which(game_pbp$last_pitch_AB == 'Y'), ]
+  
+  #add score diff variable
+  game_pbp$score_diff <- game_pbp$result.homeScore - game_pbp$result.awayScore
+  
+  #define pbp vars to keep
+  pbp_vars <- c("atBatIndex", "result.homeScore", "result.awayScore", "score_diff", "about.inning")
+  
+  #join wp and pbp data
+  game_wp <- game_wp %>%
+    left_join(game_pbp[, pbp_vars], by = c("at_bat_index" = "atBatIndex"))
+  
+  #use previous score if no match from pbp
+  for (i in 1:nrow(game_wp)) {
+    if (is.na(game_wp$result.homeScore[i])) {
+      game_wp$result.homeScore[i] <- game_wp$result.homeScore[i-1]
+    }
+    if (is.na(game_wp$result.awayScore[i])) {
+      game_wp$result.awayScore[i] <- game_wp$result.awayScore[i-1]
+    }
+    if (is.na(game_wp$score_diff[i])) {
+      game_wp$score_diff[i] <- game_wp$score_diff[i-1]
+    }
+    if (is.na(game_wp$about.inning[i])) {
+      game_wp$about.inning[i] <- game_wp$about.inning[i-1]
+    }
+  }
+  
+  #create score label
+  game_wp$score_label <- paste(game_wp$result.awayScore, game_wp$result.homeScore, sep = " - ")
+  
+  #create and fill in a variable to find if the score changed
+  if (game_wp$score_label[1] == '0 - 0') {
+    game_wp$score_change <- 'N'
+  } else {
+    game_wp$score_change <- 'Y'
+  }
+  for (i in 2:nrow(game_wp)) {
+    if (game_wp$score_diff[i] == game_wp$score_diff[i-1]) {
+      game_wp$score_change[i] <- 'N'
+    } else {
+      game_wp$score_change[i] <- 'Y'
+    }
+  }
+  
+  #create and fill in a variable to find if the inning changed
+  game_wp$inning_change <- 'Y'
+  for (i in 2:nrow(game_wp)) {
+    if (game_wp$about.inning[i] == game_wp$about.inning[i-1]) {
+      game_wp$inning_change[i] <- 'N'
+    } else {
+      game_wp$inning_change[i] <- 'Y'
+    }
+  }
+  
+  
+  ###GAME WIN PROBABILITY CHART
+  font <- 'PT Sans'
+  
+  #set titles
+  title_text <- glue('{game_data$teams.away.team.name} ({game_data$teams.away.score}) @ {game_data$teams.home.team.name} ({game_data$teams.home.score})')
+  subtitle_text1 <- glue('{game_data$start_time}, {game_data$venue_name} (Attendance: {game_data$attendance})')
+  subtitle_text2 <- glue('{game_data$temperature}°F, {game_data$other_weather}, Wind: {game_data$wind}')
+  title_header <- glue(
+    "<span style='font-weight: bold; font-size: 24px; line-height: 0.5;'>{title_text}</span><br>"
+  )
+  subtitle_header <- glue(
+    "<span style='font-weight: normal; font-size: 13px; line-height: 0.5;'>{subtitle_text1}</span><br>
+    <span style='font-weight: normal; font-size: 13px; line-height: 0.5;'>{subtitle_text2}</span><br>"
+  )
+  
+  #isolate plot variables
+  plot_vars <- c("at_bat_index", "home_team_win_probability", "about.inning", "score_label", "score_change", "inning_change")
+  
+  #Win Prob Line Chart
+  game_wp[,plot_vars] %>%
+    ggplot(aes(x = at_bat_index, y = home_team_win_probability)) +
+    geom_line(group = 1, color = ifelse(game_wp$home_team_win_probability>=50, game_data$home_color,
+                                        game_data$away_color), linewidth = 1.1, alpha = 0.5) +
+    geom_text(angle = 90, vjust = 1, nudge_y = ifelse(game_wp$home_team_win_probability>=75,-10,10),
+              size = 10/.pt, aes(label=ifelse(score_change=="Y", score_label,""))) +
+    scale_x_continuous(breaks = game_wp$at_bat_index, labels = ifelse(game_wp$inning_change=="Y" ,game_wp$about.inning,"")) +
+    ylim(c(0,100)) +
+    labs(x = "Inning", y = "Home Win Probability",
+         title = title_header,
+         subtitle = subtitle_header) +
+    theme_bw() + 
+    theme(
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank(),
+      plot.title = element_markdown(),
+      plot.subtitle = element_markdown()
+    )
+}
+#plot_game_wp(yest_game_ids$game_pk[6])
+                  
+
+#plot game batter summary
+plot_game_batters <- function(game, batter_data, team) {
+  
+  #get game data
+  game_data <- yest_game_ids[which(yest_game_ids$game_pk == game), ]
+  
+  #add team abbreviations
+  if (team == 'home') {
+    game_data <- game_data %>%
+      left_join(teams_colors_logos[,c(1,4)], by = c("teams.home.team.name" = "team_name"))
+    
+    team_name <- game_data$teams.home.team.name
+  } else {
+    game_data <- game_data %>%
+      left_join(teams_colors_logos[,c(1,4)], by = c("teams.away.team.name" = "team_name"))
+    
+    team_name <- game_data$teams.away.team.name
+  }
+  
+  ###GAME BATTER TABLE
+  font <- 'PT Sans'
+  
+  #set titles
+  title_text <- glue('{team_name} Batters')
+  title_header <- glue(
+    "<span style='font-weight: bold; font-size: 16px; align-items: center; line-height: 0.5;'>{title_text}</span><br>"
+  )
+
+  game_batter_summary <- batter_data %>% 
+    filter(team_name == game_data$team_abbr) %>%
+    arrange(-WPA) %>%
+    select(PlayerName,PA,H,HR,R,RBI,BB,SO,SB,TB,WAR,WPA) %>%
+    gt(id = 'table') %>% 
+    gt_theme_nytimes() %>% 
+    cols_align(columns = c(everything(), -PlayerName), 'center') %>% 
+    cols_align(columns = c(PlayerName), 'left') %>% 
+    cols_width(PlayerName ~ px(150), c(WAR,WPA) ~ px(60), everything() ~ px(35)) %>%
+    fmt_number(columns = c(WAR,WPA), decimals = 3) %>% 
+    gt_color_rows(c(WAR,WPA), palette = "RdYlGn", direction = 1, domain = c(-0.8,0,0.8), pal_type = "continuous") %>%
+    tab_style(locations = cells_body(columns = c(PlayerName,PA,H,HR,R,RBI,BB,SO,SB,TB,WAR,WPA)), style = cell_borders()) %>% 
+    tab_style(locations = cells_body(rows = 1), style = cell_borders(sides = "top", weight = px(2))) %>% 
+    tab_header(title = html(title_header)) %>% 
+    tab_options(data_row.padding = 3.5,
+                source_notes.border.bottom.style = "solid",
+                source_notes.border.bottom.color = "white",
+                source_notes.font.size = 10) %>% 
+    cols_label(PlayerName = 'Player') %>% 
+    tab_source_note(md("WPA: Win Probability Added")) %>%
+    opt_css(
+      "
+        #table .gt_heading {
+          padding-top: 6px;
+          padding-bottom: 0px;
+        }
+        #table .gt_subtitle {
+          padding-top: 2px;
+          padding-bottom: 6px;
+        }
+        #table tbody tr:last-child {
+        border-bottom: 2px solid #000000;
+        }
+        "
+    )
+  return(game_batter_summary)
+}
+#test game scoreboard function
+#plot_game_batters(yest_game_ids$game_pk[14], yest_batters, 'away')
+
+
+#plot game batter summary
+plot_game_pitchers <- function(game, pitcher_data, team) {
+  
+  #get game data
+  game_data <- yest_game_ids[which(yest_game_ids$game_pk == game), ]
+  
+  #grab team name for title
+  team_name <- NA
+  
+  #add team abbreviations
+  if (team == 'home') {
+    game_data <- game_data %>%
+      left_join(teams_colors_logos[,c(1,4)], by = c("teams.home.team.name" = "team_name"))
+    
+    team_name <- game_data$teams.home.team.name
+  } else {
+    game_data <- game_data %>%
+      left_join(teams_colors_logos[,c(1,4)], by = c("teams.away.team.name" = "team_name"))
+    
+    team_name <- game_data$teams.away.team.name
+  }
+  
+  ###GAME PITCHER TABLE
+  font <- 'PT Sans'
+  
+  #set titles
+  title_text <- glue('{team_name} Pitchers')
+  title_header <- glue(
+    "<span style='font-weight: bold; font-size: 16px; align-items: center; line-height: 0.5;'>{title_text}</span><br>"
+  )
+  
+  game_pitcher_summary <- pitcher_data %>% 
+    filter(team_name == game_data$team_abbr) %>%
+    arrange(-WPA) %>%
+    select(PlayerName,Pitches,GS,IP,H,R,ER,HR,BB,SO,WAR,WPA) %>%
+    gt(id = 'table') %>% 
+    gt_theme_nytimes() %>% 
+    cols_align(columns = c(everything(), -PlayerName), 'center') %>% 
+    cols_align(columns = c(PlayerName), 'left') %>% 
+    cols_width(PlayerName ~ px(150), c(Pitches,WAR,WPA) ~ px(60), everything() ~ px(35)) %>%
+    fmt_number(columns = c(IP), decimals = 1) %>% 
+    fmt_number(columns = c(WAR,WPA), decimals = 3) %>% 
+    gt_color_rows(c(WAR,WPA), palette = "RdYlGn", direction = 1, domain = c(-0.8,0,0.8), pal_type = "continuous") %>%
+    tab_style(locations = cells_body(columns = c(PlayerName,Pitches,IP,H,R,ER,HR,BB,SO,WAR,WPA)), style = cell_borders()) %>% 
+    tab_style(locations = cells_body(rows = 1), style = cell_borders(sides = "top", weight = px(2))) %>% 
+    tab_style(locations = cells_body(rows = which(GS == 1), columns = 1), style = cell_fill(color = "#ebca66", alpha = 0.15)) %>%
+    tab_header(title = html(title_header)) %>% 
+    cols_hide(GS) %>%
+    tab_options(data_row.padding = 3.5,
+                source_notes.border.bottom.style = "solid",
+                source_notes.border.bottom.color = "white",
+                source_notes.font.size = 10) %>% 
+    cols_label(PlayerName = 'Player') %>% 
+    tab_source_note(md("WPA: Win Probability Added<br>Starting pitcher highlighted in gold")) %>%
+    opt_css(
+      "
+        #table .gt_heading {
+          padding-top: 6px;
+          padding-bottom: 0px;
+        }
+        #table .gt_subtitle {
+          padding-top: 2px;
+          padding-bottom: 6px;
+        }
+        #table tbody tr:last-child {
+        border-bottom: 2px solid #000000;
+        }
+        "
+    )
+  return(game_pitcher_summary)
+}
+#test game scoreboard function
+#plot_game_pitchers(yest_game_ids$game_pk[14], yest_pitchers, 'away')
+
+
+```
+
+```{r, eval=TRUE, echo=FALSE, fig.show = 'hide'}
+##### PRINT ALL GAMES
+
+#crop function
+crop_gt <- function(file, whitespace) {
+  image_read(file) %>% 
+    image_trim() %>% 
+    image_border("white", glue('{whitespace}x{whitespace}')) %>% 
+    image_write(file)
+}
+#create data frame to store image names
+images <- as.data.frame(NA)
+
+
+#print scoreboard summary
+image_scoreboard <- "yest_scoreboard.png"
+gtsave(plot_game_scoreboard(yest_game_ids$game_pk), image_scoreboard)
+crop_gt(image_scoreboard, '40')
+images <- rbind(images,image_scoreboard)
+
+#print starting pitcher summary
+image_sp_summary <- "sp_summary.png"
+gtsave(plot_SPs(yest_pitchers), image_sp_summary)
+crop_gt(image_sp_summary, '40')
+images <- rbind(images,image_sp_summary)
+
+#print top batter summary
+image_top_batters <- "yest_top_batters.png"
+gtsave(plot_top_batters(yest_batters), image_top_batters)
+crop_gt(image_top_batters, '40')
+images <- rbind(images,image_top_batters)
+
+#print summary tables for each game
+for (k in 1:nrow(yest_game_ids)){
+  
+  #define teams
+  teams <- as.vector(unlist(c(yest_game_ids[k,10], yest_game_ids[k,15])))
+  
+  #Game Win Probability
+  image_game_wp <- paste(gsub("'","",teams[1]), paste("at", paste(gsub("'","",teams[2]), ".png", sep = "")))
+  ggsave(image_game_wp, plot_game_wp(yest_game_ids$game_pk[k]))
+  images <- rbind(images,image_game_wp)
+  
+  
+  #Away Batters
+  image_game_away_batters <- paste(gsub("'","",teams[1]), paste("Batters", ".png", sep = ""))
+  gtsave(plot_game_batters(yest_game_ids$game_pk[k], yest_batters, 'away'), image_game_away_batters)
+  crop_gt(image_game_away_batters, '40')
+  
+  #Home Batters
+  image_game_home_batters <- paste(gsub("'","",teams[2]), paste("Batters", ".png", sep = ""))
+  gtsave(plot_game_batters(yest_game_ids$game_pk[k], yest_batters, 'home'), image_game_home_batters)
+  crop_gt(image_game_home_batters, '40')
+  
+  #combine batter images
+  temp_away_batters <- ggdraw() + draw_image(image_game_away_batters, scale = 0.95)
+  temp_home_batters <- ggdraw() + draw_image(image_game_home_batters, scale = 0.95)
+  image_game_batters <- paste(teams[1], paste("at", paste(teams[2], paste("Batters", ".png", sep = ""))))
+  ggsave(image_game_batters, ggarrange(temp_away_batters, temp_home_batters, nrow = 1))
+  crop_gt(image_game_batters, '40')
+  images <- rbind(images,image_game_batters)
+  
+  
+  #Away Pitchers
+  image_game_away_pitchers <- paste(gsub("'","",teams[1]), paste("Pitchers", ".png", sep = ""))
+  gtsave(plot_game_pitchers(yest_game_ids$game_pk[k], yest_pitchers, 'away'), image_game_away_pitchers)
+  crop_gt(image_game_away_pitchers, '40')
+  
+  #Home Pitchers
+  image_game_home_pitchers <- paste(gsub("'","",teams[2]), paste("Pitchers", ".png", sep = ""))
+  gtsave(plot_game_pitchers(yest_game_ids$game_pk[k], yest_pitchers, 'home'), image_game_home_pitchers)
+  crop_gt(image_game_home_pitchers, '40')
+  
+  #combine pitcher images
+  temp_away_pitchers <- ggdraw() + draw_image(image_game_away_pitchers, scale = 0.95)
+  temp_home_pitchers <- ggdraw() + draw_image(image_game_home_pitchers, scale = 0.95)
+  image_game_pitchers <- paste(teams[1], paste("at", paste(teams[2], paste("Pitchers", ".png", sep = ""))))
+  ggsave(image_game_pitchers, ggarrange(temp_away_pitchers, temp_home_pitchers, nrow = 1))
+  crop_gt(image_game_pitchers, '40')
+  images <- rbind(images,image_game_pitchers)
+  
+}
+```
+
+```{r, eval=TRUE, echo=FALSE, fig.align = 'center', out.width="95%"}
+images <- images[c(2:nrow(images)),]
+knitr::include_graphics(images, error = FALSE)
+```
+
